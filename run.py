@@ -15,6 +15,7 @@ import video_reader
 import random 
 
 import logging
+from tqdm import tqdm
 
 formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
 
@@ -105,7 +106,7 @@ class Learner:
     def parse_command_line(self):
         parser = argparse.ArgumentParser()
 
-        parser.add_argument("--dataset", choices=["ssv2", "kinetics", "hmdb", "ucf"], default="ssv2", help="Dataset to use.")
+        parser.add_argument("--dataset", choices=["ssv2", "kinetics", "hmdb", "ucf", "nturgbd"], default="ssv2", help="Dataset to use.")
         parser.add_argument("--learning_rate", "-lr", type=float, default=0.001, help="Learning rate.")
         parser.add_argument("--tasks_per_batch", type=int, default=16, help="Number of tasks between parameter optimizations.")
         parser.add_argument("--checkpoint_dir", "-c", default=None, help="Directory to save checkpoint to.")
@@ -128,12 +129,13 @@ class Learner:
         parser.add_argument("--save_freq", type=int, default=5000, help="Number of iterations between checkpoint saves.")
         parser.add_argument("--img_size", type=int, default=224, help="Input image size to the CNN after cropping.")
         parser.add_argument('--temp_set', nargs='+', type=int, help='cardinalities e.g. 2,3 is pairs and triples', default=[2,3])
-        parser.add_argument("--scratch", choices=["bc", "bp", "new"], default="bp", help="directory containing dataset, splits, and checkpoint saves.")
+        parser.add_argument("--scratch", choices=["bc", "bp", "new", "/home/sberti_datasets/"], default="bp", help="directory containing dataset, splits, and checkpoint saves.")
         parser.add_argument("--num_gpus", type=int, default=1, help="Number of GPUs to split the ResNet over")
         parser.add_argument("--debug_loader", default=False, action="store_true", help="Load 1 vid per class for debugging")
         parser.add_argument("--split", type=int, default=7, help="Dataset split.")
         parser.add_argument('--sch', nargs='+', type=int, help='iters to drop learning rate', default=[1000000])
         parser.add_argument("--test_model_only", type=bool, default=False, help="Only testing the model from the given checkpoint")
+        parser.add_argument("--use_fine_grain_tasks", type=float, default=0., help="If True, dataset loads fine-grained tasks")
 
         args = parser.parse_args()
         
@@ -145,7 +147,7 @@ class Learner:
             args.num_workers = 3
             args.scratch = "/work/tp8961"
         elif args.scratch == "new":
-            args.scratch = "./imp_datasets/"
+            args.scratch = "."
         
         if args.checkpoint_dir == None:
             print("need to specify a checkpoint dir")
@@ -159,8 +161,8 @@ class Learner:
             args.trans_linear_in_dim = 512
         
         if args.dataset == "ssv2":
-            args.traintestlist = os.path.join(args.scratch, "video_datasets/splits/somethingsomethingv2TrainTestlist")
-            args.path = os.path.join(args.scratch, "video_datasets/data/somethingsomethingv2_256x256q5_7l8.zip")
+            args.traintestlist = os.path.join(args.scratch, "splits/ssv2_OTAM")
+            args.path = "/home/iit.local/sberti/datasets/SSv2/all"
         elif args.dataset == "kinetics":
             args.traintestlist = os.path.join(args.scratch, "video_datasets/splits/kineticsTrainTestlist")
             args.path = os.path.join(args.scratch, "video_datasets/data/kinetics_256q5_1.zip")
@@ -171,6 +173,9 @@ class Learner:
             args.traintestlist = os.path.join(args.scratch, "video_datasets/splits/hmdb51TrainTestlist")
             args.path = os.path.join(args.scratch, "video_datasets/data/hmdb51_256q5.zip")
             # args.path = os.path.join(args.scratch, "video_datasets/data/hmdb51_jpegs_256.zip")
+        elif args.dataset == "nturgbd":
+            args.traintestlist = os.path.join("splits", "nturgbd")
+            args.path = os.path.join(args.scratch, "NTU_dataset")
 
         with open("args.pkl", "wb") as f:
             pickle.dump(args, f, pickle.HIGHEST_PROTOCOL)
@@ -192,6 +197,7 @@ class Learner:
                     self.load_checkpoint()
                     accuracy_dict = self.test(session, 1)
                     print(accuracy_dict)
+                    exit()  # NOTE added by me
 
 
                 for task_dict in self.video_loader:
@@ -277,10 +283,12 @@ class Learner:
                 losses = []
                 iteration = 0
                 item = self.args.dataset
+                progress_bar = tqdm(total=self.args.num_test_tasks, desc='Processing')
                 for task_dict in self.video_loader:
                     if iteration >= self.args.num_test_tasks:
                         break
                     iteration += 1
+                    progress_bar.update()
 
                     context_images, target_images, context_labels, target_labels, real_target_labels, batch_class_list = self.prepare_task(task_dict)
                     model_dict = self.model(context_images, context_labels, target_images)

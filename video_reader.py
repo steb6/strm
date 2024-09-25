@@ -9,9 +9,10 @@ import random
 import re
 import pickle
 from glob import glob
-
+import tqdm
 from videotransforms.video_transforms import Compose, Resize, RandomCrop, RandomRotation, ColorJitter, RandomHorizontalFlip, CenterCrop, TenCrop
 from videotransforms.volume_transforms import ClipToTensor
+from sklearn.metrics.pairwise import cosine_similarity
 
 """Contains video frame paths and ground truth labels for a single split (e.g. train videos). """
 class Split():
@@ -75,6 +76,19 @@ class VideoDataset(torch.utils.data.Dataset):
         self.setup_transforms()
         self._select_fold()
         self.read_dir()
+
+        if args.use_fine_grain_tasks and args.use_fine_grain_tasks > 0:
+            self.use_fine_grain_tasks = self.args.use_fine_grain_tasks
+            import clip
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            model, preprocess = clip.load("ViT-B/32", device=device)
+            class_labels_clean = [x.replace("_", " ") for x in self.class_folders]
+            with torch.no_grad():
+                text_inputs = clip.tokenize(class_labels_clean).to(device)
+                text_features = model.encode_text(text_inputs).cpu().numpy()
+            # Compute the similarity matrix
+            self.similarity_matrix = cosine_similarity(text_features)
+            print("")
 
     """Setup crop sizes/flips for augmentation during training and centre crop for testing"""
     def setup_transforms(self):
@@ -161,7 +175,7 @@ class VideoDataset(torch.utils.data.Dataset):
             class_folders = os.listdir(self.data_dir)
             class_folders.sort()
             self.class_folders = class_folders
-            for class_folder in class_folders:
+            for class_folder in tqdm.tqdm(class_folders):
                 video_folders = os.listdir(os.path.join(self.data_dir, class_folder))
                 video_folders.sort()
                 if self.args.debug_loader:
@@ -171,6 +185,7 @@ class VideoDataset(torch.utils.data.Dataset):
                     if c == None:
                         continue
                     imgs = os.listdir(os.path.join(self.data_dir, class_folder, video_folder))
+                    imgs = [x for x in imgs if x.endswith(".jpg")]  # ADDED BY ME
                     if len(imgs) < self.seq_len:
                         continue            
                     imgs.sort()
@@ -186,6 +201,7 @@ class VideoDataset(torch.utils.data.Dataset):
         if split is None:
             get_train_split = self.train
         else:
+            split = split.lower() # ADDED BY ME
             if split in self.train_test_lists["train"]:
                 get_train_split = True
             elif split in self.train_test_lists["test"]:
@@ -293,7 +309,20 @@ class VideoDataset(torch.utils.data.Dataset):
         #select classes to use for this task
         c = self.get_train_or_test_db()
         classes = c.get_unique_classes()
-        batch_classes = random.sample(classes, self.way)
+
+        if self.args.use_fine_grain_tasks and \
+            self.use_fine_grain_tasks > 0 and \
+            random.random() < self.use_fine_grain_tasks:
+            # task_classes = self.similarity_matrix[classes][:, classes]
+            random_class = random.sample(classes, 1)
+            assert len(random_class) == 1
+            random_class = random_class[0]
+            # select self.way most similar classes based on similarity matrix
+            all_sorted_similarities = np.argsort(self.similarity_matrix[random_class])[::-1]
+            all_sorted_similarities = [x for x in all_sorted_similarities if x in classes]
+            batch_classes = all_sorted_similarities[:self.way]
+        else:
+            batch_classes = random.sample(classes, self.way)
 
         if self.train:
             n_queries = self.args.query_per_class

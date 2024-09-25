@@ -64,10 +64,13 @@ def verify_checkpoint_dir(checkpoint_dir, resume, test_mode):
     #        sys.exit()
     else:
         if os.path.exists(checkpoint_dir):
+            # import shutil  # TODO ADDED BY ME
+            # input("Are you sure to erase directory {checkpoint_dir}?")  # TODO ADDED BY ME
+            # shutil.rmtree(checkpoint_dir)  # TODO ADDED BY ME
             print("Checkpoint directory ({}) already exits.".format(checkpoint_dir), flush=True)
             print("If starting a new training run, specify a directory that does not already exist.", flush=True)
             print("If you want to resume a training run, specify the -r option on the command line.", flush=True)
-            sys.exit()
+            # sys.exit()
 
 
 def print_and_log(log_file, message):

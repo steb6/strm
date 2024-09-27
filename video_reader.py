@@ -190,7 +190,7 @@ class VideoDataset(torch.utils.data.Dataset):
                         continue            
                     imgs.sort()
                     paths = [os.path.join(self.data_dir, class_folder, video_folder, img) for img in imgs]
-                    paths.sort()
+                    paths.sort(key=lambda x: int(x.split('/')[-1].split('.')[0]))
                     class_id =  class_folders.index(class_folder)
                     c.add_vid(paths, class_id)
         print("loaded {}".format(self.data_dir))
@@ -322,7 +322,7 @@ class VideoDataset(torch.utils.data.Dataset):
             all_sorted_similarities = [x for x in all_sorted_similarities if x in classes]
             batch_classes = all_sorted_similarities[:self.way]
         else:
-            batch_classes = random.sample(classes, self.way)
+            batch_classes = random.sample(classes, self.way)  # this works without replacement
 
         if self.train:
             n_queries = self.args.query_per_class

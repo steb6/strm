@@ -89,7 +89,7 @@ def get_log_files(checkpoint_dir, resume, test_mode):
     verify_checkpoint_dir(checkpoint_dir, resume, test_mode)
     #if not test_mode and not resume:
     if not resume:
-        os.makedirs(checkpoint_dir)
+        os.makedirs(checkpoint_dir, exist_ok=True)
     checkpoint_path_validation = os.path.join(checkpoint_dir, 'best_validation.pt')
     checkpoint_path_final = os.path.join(checkpoint_dir, 'fully_trained.pt')
     logfile_path = os.path.join(checkpoint_dir, 'log.txt')

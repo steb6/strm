@@ -1,0 +1,16 @@
+Options: Namespace(checkpoint_dir='testing_nturgbd/', dataset='nturgbd', debug_loader=False, img_size=224, learning_rate=0.001, method='resnet50', num_gpus=4, num_test_tasks=1000, num_workers=10, opt='sgd', path='/home/sberti_datasets/NTU_dataset', print_freq=1, query_per_class=4, query_per_class_test=1, resume_from_checkpoint=False, save_freq=75000, sch=[1000000], scratch='/home/sberti_datasets/', seq_len=8, shot=5, split=7, tasks_per_batch=16, temp_set=[2], test_iters=[75000], test_model_only=True, test_model_path='checkpoint_dir_nturgbd/checkpoint10000.pt', training_iterations=75010, traintestlist='splits/nturgbd', trans_dropout=0.1, trans_linear_in_dim=2048, trans_linear_out_dim=1152, use_fine_grain_tasks=0.5, way=5)
+
+Checkpoint Directory: testing_nturgbd/
+
+Options: Namespace(checkpoint_dir='testing_nturgbd/', dataset='nturgbd', debug_loader=False, img_size=224, learning_rate=0.001, method='resnet50', num_gpus=4, num_test_tasks=1000, num_workers=10, opt='sgd', path='/home/sberti_datasets/NTU_dataset', print_freq=1, query_per_class=4, query_per_class_test=1, resume_from_checkpoint=False, save_freq=75000, sch=[1000000], scratch='/home/sberti_datasets/', seq_len=8, shot=5, split=7, tasks_per_batch=16, temp_set=[2], test_iters=[75000], test_model_only=True, test_model_path='checkpoint_dir_nturgbd/checkpoint10000.pt', training_iterations=75010, traintestlist='splits/nturgbd', trans_dropout=0.1, trans_linear_in_dim=2048, trans_linear_out_dim=1152, use_fine_grain_tasks=0.5, way=5)
+
+Checkpoint Directory: testing_nturgbd/
+
+Options: Namespace(checkpoint_dir='testing_nturgbd/', dataset='nturgbd', debug_loader=False, img_size=224, learning_rate=0.001, method='resnet50', num_gpus=4, num_test_tasks=1000, num_workers=10, opt='sgd', path='/home/sberti_datasets/NTU_dataset', print_freq=1, query_per_class=4, query_per_class_test=1, resume_from_checkpoint=False, save_freq=75000, sch=[1000000], scratch='/home/sberti_datasets/', seq_len=8, shot=5, split=7, tasks_per_batch=16, temp_set=[2], test_iters=[75000], test_model_only=True, test_model_path='checkpoint_dir_nturgbd/checkpoint10000.pt', training_iterations=75010, traintestlist='splits/nturgbd', trans_dropout=0.1, trans_linear_in_dim=2048, trans_linear_out_dim=1152, use_fine_grain_tasks=0.5, way=5)
+
+Checkpoint Directory: testing_nturgbd/
+
+Options: Namespace(checkpoint_dir='testing_nturgbd/', dataset='nturgbd', debug_loader=False, img_size=224, learning_rate=0.001, method='resnet50', num_gpus=4, num_test_tasks=1000, num_workers=10, opt='sgd', path='/home/sberti_datasets/NTU_dataset', print_freq=1, query_per_class=4, query_per_class_test=1, resume_from_checkpoint=False, save_freq=75000, sch=[1000000], scratch='/home/sberti_datasets/', seq_len=8, shot=5, split=7, tasks_per_batch=16, temp_set=[2], test_iters=[75000], test_model_only=True, test_model_path='checkpoint_dir_nturgbd/checkpoint10000.pt', training_iterations=75010, traintestlist='splits/nturgbd', trans_dropout=0.1, trans_linear_in_dim=2048, trans_linear_out_dim=1152, use_fine_grain_tasks=0.5, way=5)
+
+Checkpoint Directory: testing_nturgbd/
+

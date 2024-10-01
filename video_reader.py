@@ -13,6 +13,7 @@ import tqdm
 from videotransforms.video_transforms import Compose, Resize, RandomCrop, RandomRotation, ColorJitter, RandomHorizontalFlip, CenterCrop, TenCrop
 from videotransforms.volume_transforms import ClipToTensor
 from sklearn.metrics.pairwise import cosine_similarity
+import json
 
 """Contains video frame paths and ground truth labels for a single split (e.g. train videos). """
 class Split():
@@ -83,6 +84,15 @@ class VideoDataset(torch.utils.data.Dataset):
             device = "cuda" if torch.cuda.is_available() else "cpu"
             model, preprocess = clip.load("ViT-B/32", device=device)
             class_labels_clean = [x.replace("_", " ") for x in self.class_folders]
+            
+            # Special case for SSv2 that doesn't have class names as folder names
+            if "SSv2" in self.data_dir:
+                    # open json file
+                    with open("videoid_to_template.json", 'rb') as f:
+                        videoid_to_template = json.load(f)
+                    class_labels_clean = [videoid_to_template[x] for x in self.class_folders]
+                    class_labels_clean = [x.replace("[", "").replace("]", "") for x in class_labels_clean]
+
             with torch.no_grad():
                 text_inputs = clip.tokenize(class_labels_clean).to(device)
                 text_features = model.encode_text(text_inputs).cpu().numpy()
@@ -231,7 +241,11 @@ class VideoDataset(torch.utils.data.Dataset):
                 
                 selected_files.extend(data)
             lists[name] = selected_files
-        self.train_test_lists = lists
+        # self.train_test_lists = lists
+        # dtype = [('train', 'O'), ('test', 'O')]
+        tr, te = np.array(lists['train'], dtype=str), np.array(lists['test'], dtype=str)
+        self.train_test_lists = {"train": tr, "test": te}
+
 
     """ Set len to large number as we use lots of random tasks. Stopping point controlled in run.py. """
     def __len__(self):

@@ -6,7 +6,7 @@
 #SBATCH --time=2-00:00:00
 
 # NEW_HOME="./strm_ssv2/"
-COMMAND_TO_RUN="python3 run.py -c testing_nturgbd_FG/ 
+COMMAND_TO_RUN="python3 run.py -c results/testing_nturgbd_FG_FG/ 
                 --query_per_class 4 
                 --shot 5 
                 --way 5 
@@ -25,9 +25,9 @@ COMMAND_TO_RUN="python3 run.py -c testing_nturgbd_FG/
                 --training_iterations 75010 
                 --temp_set 2 
                 --test_model_only True 
-                --test_model_path checkpoint_dir_nturgbd/checkpoint70000.pt
-                --num_test_tasks 1000
-                --use_fine_grain_tasks True"
+                --test_model_path runs_strm/checkpoint_dir_nturgbd_FG/checkpoint100000.pt
+                --num_test_tasks 10000
+                --use_fine_grain_tasks 1"
 # TODO CAREFUL, CHECK num_test_tasks (before it was default value), num_gpus
 
 echo ""

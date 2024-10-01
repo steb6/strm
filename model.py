@@ -515,6 +515,16 @@ class CNN_STRM(nn.Module):
 
         return return_dict
 
+    def forward_hook(self, module, input, output):
+        self.activations.append(output)
+
+    def register_activation_hook(self):
+        # Assuming the ResNet backbone is an attribute of your model
+        resnet_backbone = self.resnet
+        self.activations = []
+        resnet_backbone[-1][-1].register_forward_hook(self.forward_hook)
+
+
     def distribute_model(self):
         """
         Distributes the CNNs over multiple GPUs.

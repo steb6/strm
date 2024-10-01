@@ -16,6 +16,7 @@ import random
 
 import logging
 from tqdm import tqdm
+import cv2
 
 formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
 
@@ -91,6 +92,7 @@ class Learner:
         model = model.to(self.device) 
         if self.args.num_gpus > 1:
             model.distribute_model()
+        model.register_activation_hook()
         return model
 
     def init_data(self):
@@ -302,25 +304,56 @@ class Learner:
                     # Add the logits before computing the accuracy
                     target_logits = target_logits + 0.1*target_logits_post_pat
 
-                    # TODO start task analysis
+                    ############################
+                    # NOTE start task analysis #
+                    ############################
                     predictions = target_logits.argmax(dim=-1).squeeze()
                     wrong_predictions = predictions != target_labels
                     if wrong_predictions.sum() > 0:
+                        # get the wrong predictions
                         batch_class_list = batch_class_list.int()
                         print("SUPPORT CLASSES:", [self.video_loader.dataset.class_folders[i] for i in batch_class_list])
-                        trg_labels = target_labels.int()
-                        pred_labels = predictions.int()
+                        wrong_target_labels = target_labels.int()[wrong_predictions]
+                        wrong_predictions_labels = predictions.int()[wrong_predictions]
+                        wrong_target_images = target_images.reshape(-1, 8, 3, 224, 224)[wrong_predictions]
 
-                        count = 0
-                        import cv2
-                        for pred, true in zip(pred_labels, trg_labels.int()):
+                        # get also wrong activations
+                        support_activations, target_activations = self.model.activations
+                        target_activations = target_activations.reshape(-1, 8, 2048, 7, 7)[wrong_predictions]
+                        target_activations = target_activations.norm(dim=2)
+
+                        for pred, true, video, activations in zip(wrong_predictions_labels, wrong_target_labels, wrong_target_images, target_activations):
                             print("TRUE", self.video_loader.dataset.class_folders[batch_class_list[true]])
                             print("PRED", self.video_loader.dataset.class_folders[batch_class_list[pred]])
-                            for img in target_images.reshape(-1, 8, 3, 224, 224)[count]:   
-                                cv2.imshow("", img.cpu().numpy().swapaxes(0, 1).swapaxes(1, 2))
+                            images_with_activations = []
+                            for img, act in zip(video, activations):
+
+                                img = img.cpu().numpy().swapaxes(0, 1).swapaxes(1, 2)
+                                act = act.cpu().numpy()
+                                act = (act - act.min()) / (act.max() - act.min())
+                                act = cv2.resize(act, (img.shape[1], img.shape[0]))
+                                heatmap = cv2.applyColorMap(np.uint8(255 * act), cv2.COLORMAP_JET)
+
+                                img = np.uint8(255 * img)
+                                overlay = cv2.addWeighted(img, 0.6, heatmap, 0.4, 0)
+
+                                images_with_activations.append(overlay)
+
+                                cv2.imshow("Overlay", overlay)
                                 cv2.waitKey(0)
-                            count += 1 
-                    # TODO end task analysis
+
+                            # Concatenate images horizontally
+                            concatenated_image = cv2.hconcat(images_with_activations)
+                            t = self.video_loader.dataset.class_folders[batch_class_list[true]]
+                            p = self.video_loader.dataset.class_folders[batch_class_list[pred]]
+                            save_path = f"wrong_predictions_activations/true_{t}_pred_{p}.png"
+                            cv2.imwrite(save_path, concatenated_image)
+
+                        
+                    self.model.activations = []
+                    ############################
+                    # NOTE end   task analysis #
+                    ############################
 
                     accuracy = self.accuracy_fn(target_logits, target_labels)
                     

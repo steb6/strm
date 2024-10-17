@@ -169,3 +169,25 @@ def linear_classifier(x, param_dict):
     """
     return F.linear(x, param_dict['weight_mean'], param_dict['bias_mean'])
 
+def binary_classification_accuracy(predictions, labels, threshold=0.5):
+    """
+    Compute binary classification accuracy.
+    
+    Args:
+    - predictions (torch.Tensor): The predicted probabilities (output of the sigmoid function).
+    - labels (torch.Tensor): The true labels (0 or 1).
+    - threshold (float): The threshold to convert probabilities to binary predictions.
+    
+    Returns:
+    - accuracy (float): The accuracy of the binary classification.
+    """
+    # Convert probabilities to binary predictions
+    binary_predictions = (predictions >= threshold).float()
+    
+    # Compare predictions with true labels
+    correct_predictions = (binary_predictions == labels).float()
+    
+    # Compute accuracy
+    accuracy = correct_predictions.mean().item()
+    
+    return accuracy

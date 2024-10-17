@@ -78,6 +78,8 @@ class VideoDataset(torch.utils.data.Dataset):
         self._select_fold()
         self.read_dir()
 
+        self.open_set = args.open_set
+
         if args.use_fine_grain_tasks and args.use_fine_grain_tasks > 0:
             self.use_fine_grain_tasks = self.args.use_fine_grain_tasks
             import clip
@@ -349,8 +351,10 @@ class VideoDataset(torch.utils.data.Dataset):
         target_labels = []
         real_support_labels = []
         real_target_labels = []
+        unknown_set = []
+        unknown_labels = []
 
-        for bl, bc in enumerate(batch_classes):
+        for bl, bc in enumerate(batch_classes):  # for each class, select supports and queries
             
             #select shots from the chosen classes
             n_total = c.get_num_videos_for_class(bc)
@@ -365,7 +369,20 @@ class VideoDataset(torch.utils.data.Dataset):
                 target_set.append(vid)
                 target_labels.append(bl)
                 real_target_labels.append(bc)
-        
+
+        # Select unknown classes
+        if self.open_set:
+            unknown_classes = [x for x in classes if x not in batch_classes]
+            for _ in range(len(batch_classes)):
+                for _ in range(n_queries):
+                    bc = random.choice(unknown_classes)
+                    n_total = c.get_num_videos_for_class(bc)
+                    idx = random.randint(0, n_total - 1)
+                    vid, vid_id = self.get_seq(bc, idx)
+                    unknown_set.append(vid)
+                    unknown_labels.append(bc)
+
+
         s = list(zip(support_set, support_labels))
         random.shuffle(s)
         support_set, support_labels = zip(*s)
@@ -381,6 +398,10 @@ class VideoDataset(torch.utils.data.Dataset):
         real_target_labels = torch.FloatTensor(real_target_labels)
         batch_classes = torch.FloatTensor(batch_classes) 
         
-        return {"support_set":support_set, "support_labels":support_labels, "target_set":target_set, "target_labels":target_labels, "real_target_labels":real_target_labels, "batch_class_list": batch_classes}
+        unknown_set = torch.cat(unknown_set)
+        unknown_labels = torch.FloatTensor(unknown_labels)
+
+        return {"support_set":support_set, "support_labels":support_labels, "target_set":target_set, "target_labels":target_labels, "real_target_labels":real_target_labels, "batch_class_list": batch_classes, 
+                "unknown_set":unknown_set, "unknown_labels":unknown_labels}
 
 

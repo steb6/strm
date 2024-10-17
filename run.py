@@ -3,7 +3,7 @@ import numpy as np
 import argparse
 import os
 import pickle
-from utils import print_and_log, get_log_files, TestAccuracies, loss, aggregate_accuracy, verify_checkpoint_dir, task_confusion
+from utils import print_and_log, get_log_files, TestAccuracies, loss, aggregate_accuracy, verify_checkpoint_dir, task_confusion, binary_classification_accuracy
 from model import CNN_STRM
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Quiet TensorFlow warnings
 import tensorflow as tf
@@ -16,6 +16,7 @@ import random
 
 import logging
 from tqdm import tqdm
+import wandb
 
 formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
 
@@ -61,6 +62,9 @@ class Learner:
         print_and_log(self.logfile, "Options: %s\n" % self.args)
         print_and_log(self.logfile, "Checkpoint Directory: %s\n" % self.checkpoint_dir)
 
+        # WANDB
+        wandb.init(project="strm")
+        wandb.login()
         
         gpu_device = 'cuda'
         self.device = torch.device(gpu_device if torch.cuda.is_available() else 'cpu')
@@ -72,6 +76,7 @@ class Learner:
         
         self.loss = loss
         self.accuracy_fn = aggregate_accuracy
+        self.open_set_accuracy_fn = binary_classification_accuracy
         
         if self.args.opt == "adam":
             self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.args.learning_rate)
@@ -86,11 +91,14 @@ class Learner:
             self.load_checkpoint()
         self.optimizer.zero_grad()
 
+        self.open_set_loss = torch.nn.BCELoss()
+
     def init_model(self):
         model = CNN_STRM(self.args)
         model = model.to(self.device) 
         if self.args.num_gpus > 1:
             model.distribute_model()
+        wandb.watch(model)
         return model
 
     def init_data(self):
@@ -135,7 +143,8 @@ class Learner:
         parser.add_argument("--split", type=int, default=7, help="Dataset split.")
         parser.add_argument('--sch', nargs='+', type=int, help='iters to drop learning rate', default=[1000000])
         parser.add_argument("--test_model_only", type=bool, default=False, help="Only testing the model from the given checkpoint")
-        parser.add_argument("--use_fine_grain_tasks", type=float, default=0., help="If True, dataset loads fine-grained tasks")
+        parser.add_argument("--use_fine_grain_tasks", type=float, default=0., help="The percentage of fine-grain tasks to use")
+        parser.add_argument("--open_set", action="store_true", help="If True, open-set task is added")   
 
         args = parser.parse_args()
         
@@ -188,6 +197,8 @@ class Learner:
         with tf.compat.v1.Session(config=config) as session:
                 train_accuracies = []
                 losses = []
+                open_set_accuracies = []
+                open_set_losses = []
                 total_iterations = self.args.training_iterations
 
                 iteration = self.start_iteration
@@ -206,9 +217,11 @@ class Learner:
                     iteration += 1
                     torch.set_grad_enabled(True)
 
-                    task_loss, task_accuracy = self.train_task(task_dict)
+                    task_loss, task_accuracy, open_set_loss, open_set_accuracy = self.train_task(task_dict)
                     train_accuracies.append(task_accuracy)
                     losses.append(task_loss)
+                    open_set_accuracies.append(open_set_accuracy)
+                    open_set_losses.append(open_set_loss)
 
                     # optimize
                     if ((iteration + 1) % self.args.tasks_per_batch == 0) or (iteration == (total_iterations - 1)):
@@ -217,17 +230,22 @@ class Learner:
                     self.scheduler.step()
                     if (iteration + 1) % self.args.print_freq == 0:
                         # print training stats
-                        print_and_log(self.logfile,'Task [{}/{}], Train Loss: {:.7f}, Train Accuracy: {:.7f}'
-                                      .format(iteration + 1, total_iterations, torch.Tensor(losses).mean().item(),
-                                              torch.Tensor(train_accuracies).mean().item()))
-                        train_logger.info("For Task: {0}, the training loss is {1} and Training Accuracy is {2}".format(iteration + 1, torch.Tensor(losses).mean().item(),
-                            torch.Tensor(train_accuracies).mean().item()))
+                        print_and_log(self.logfile,'Task [{}/{}], Train Loss: {:.7f}, Train Accuracy: {:.7f}, Open Set Loss: {:.7f}, Open Set Accuracy: {:.7f}'.format(iteration + 1, total_iterations, torch.Tensor(losses).mean().item(),
+                                              torch.Tensor(train_accuracies).mean().item(), torch.Tensor(open_set_losses).mean().item(), torch.Tensor(open_set_accuracies).mean().item()))
+                        train_logger.info("For Task: {0}, the training loss is {1} and Training Accuracy is {2} and Open Set Loss is {3} and Open Set Accuracy is {4}".format(iteration + 1, torch.Tensor(losses).mean().item(),
+                            torch.Tensor(train_accuracies).mean().item(), torch.Tensor(open_set_losses).mean().item(), torch.Tensor(open_set_accuracies).mean().item()))
 
                         avg_train_acc = torch.Tensor(train_accuracies).mean().item()
                         avg_train_loss = torch.Tensor(losses).mean().item()
+                        avg_open_set_acc = torch.Tensor(open_set_accuracies).mean().item()
+                        avg_open_set_loss = torch.Tensor(open_set_losses).mean().item()
+
+                        wandb.log({"Train Accuracy": avg_train_acc, "Train Loss": avg_train_loss, "Open Set Accuracy": avg_open_set_acc, "Open Set Loss": avg_open_set_loss})      
                         
                         train_accuracies = []
                         losses = []
+                        open_set_accuracies = []
+                        open_set_losses = []
 
                     if ((iteration + 1) % self.args.save_freq == 0) and (iteration + 1) != total_iterations:
                         self.save_checkpoint(iteration + 1)
@@ -244,25 +262,35 @@ class Learner:
         self.logfile.close()
 
     def train_task(self, task_dict):
-        context_images, target_images, context_labels, target_labels, real_target_labels, batch_class_list = self.prepare_task(task_dict)
+        context_images, target_images, context_labels, target_labels, real_target_labels, batch_class_list, unknown_images, unknown_labels = self.prepare_task(task_dict)
 
         context_images = context_images.to(self.device)
         context_labels = context_labels.to(self.device)
         target_images = target_images.to(self.device)
+        unknown_images = unknown_images.to(self.device)
 
-        model_dict = self.model(context_images, context_labels, target_images)
+        all_images = torch.cat((target_images, unknown_images), 0)
+        model_dict = self.model(context_images, context_labels, all_images)
         target_logits = model_dict['logits'].to(self.device)
+
+        # Open set logits
+        open_set_logits = model_dict['open_set_logits'].to(self.device).squeeze()
+        open_set_target = torch.cat((torch.ones_like(target_labels), torch.zeros_like(unknown_labels))).float()
+        open_set_loss = self.open_set_loss(open_set_logits, open_set_target)
+        open_set_accuracy = self.open_set_accuracy_fn(open_set_logits, open_set_target)
+        # Fix for the rest
+        target_logits, unknown_target_logits = target_logits[:, :target_labels.size(0)], target_logits[:, target_labels.size(0):]
 
         # Target logits after applying query-distance-based similarity metric on patch-level enriched features
         target_logits_post_pat = model_dict['logits_post_pat'].to(self.device)
-
+        target_logits_post_pat = target_logits_post_pat[:, :target_labels.size(0)]  # TODO ADDED TO REMOVE USELESS LOGITS
         target_labels = target_labels.to(self.device)
 
         task_loss = self.loss(target_logits, target_labels, self.device) / self.args.tasks_per_batch
         task_loss_post_pat = self.loss(target_logits_post_pat, target_labels, self.device) / self.args.tasks_per_batch
 
         # Joint loss
-        task_loss = task_loss + 0.1*task_loss_post_pat
+        task_loss = task_loss + 0.1*task_loss_post_pat + open_set_loss  # added open_set_loss
 
         # Add the logits before computing the accuracy
         target_logits = target_logits + 0.1*target_logits_post_pat
@@ -271,7 +299,7 @@ class Learner:
 
         task_loss.backward(retain_graph=False)
 
-        return task_loss, task_accuracy
+        return task_loss, task_accuracy, open_set_loss, open_set_accuracy
 
     def test(self, session, num_episode):
         self.model.eval()
@@ -290,7 +318,7 @@ class Learner:
                     iteration += 1
                     progress_bar.update()
 
-                    context_images, target_images, context_labels, target_labels, real_target_labels, batch_class_list = self.prepare_task(task_dict)
+                    context_images, target_images, context_labels, target_labels, real_target_labels, batch_class_list, unknown_images, unknown_labels = self.prepare_task(task_dict)
                     model_dict = self.model(context_images, context_labels, target_images)
                     target_logits = model_dict['logits'].to(self.device)
 
@@ -337,13 +365,18 @@ class Learner:
         real_target_labels = task_dict['real_target_labels'][0]
         batch_class_list = task_dict['batch_class_list'][0]
 
+        unknown_images = task_dict['unknown_set'][0]
+        unknown_labels = task_dict['unknown_labels'][0]
+
         if images_to_device:
             context_images = context_images.to(self.device)
             target_images = target_images.to(self.device)
+            unknown_images = unknown_images.to(self.device)
         context_labels = context_labels.to(self.device)
         target_labels = target_labels.type(torch.LongTensor).to(self.device)
+        unknown_labels = unknown_labels.type(torch.LongTensor).to(self.device)
 
-        return context_images, target_images, context_labels, target_labels, real_target_labels, batch_class_list  
+        return context_images, target_images, context_labels, target_labels, real_target_labels, batch_class_list, unknown_images, unknown_labels
 
     def shuffle(self, images, labels):
         """

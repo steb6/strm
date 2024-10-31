@@ -255,6 +255,7 @@ class Learner:
                         accuracy_dict = self.test(session, iteration + 1)
                         print(accuracy_dict)
                         self.test_accuracies.print(self.logfile, accuracy_dict)
+                        wandb.log(accuracy_dict)
 
                 # save the final model
                 torch.save(self.model.state_dict(), self.checkpoint_path_final)

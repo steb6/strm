@@ -481,7 +481,7 @@ class CNN_STRM(nn.Module):
         # Open set part
         self.open_set_model = BinaryClassificationModel(1152)
 
-    def forward(self, context_images, context_labels, target_images):
+    def forward(self, context_images, context_labels, target_images, precomputed_context_features=None):
 
         '''
             context_features/target_features is of shape (num_images x 2048) [final Resnet FC layer] after squeezing
@@ -489,31 +489,24 @@ class CNN_STRM(nn.Module):
         '''
             context_images: 200 x 3 x 224 x 224, target_images = 160 x 3 x 224 x 224
         '''
-        context_features = self.resnet(context_images) # 200 x 2048 x 7 x 7
+
+        if precomputed_context_features == None:
+            context_features = self.resnet(context_images) # 200 x 2048 x 7 x 7
+            context_features = self.adap_max(context_features) # 200 x 2048 x 4 x 4
+            context_features = context_features.reshape(-1, self.args.trans_linear_in_dim, self.num_patches) # 200 x 2048 x 16
+            context_features = context_features.permute(0, 2, 1) # 200 x 16 x 2048
+            context_features = self.attn_pat(context_features) # 200 x 16 x 2048 
+            context_features = torch.mean(context_features, dim = 1) # 200 x 2048
+            context_features = context_features.reshape(-1, self.args.seq_len, self.args.trans_linear_in_dim) # 25 x 8 x 2048
+        else:
+            context_features = precomputed_context_features
+
         target_features = self.resnet(target_images) # 160 x 2048 x 7 x 7
-
-        # Decrease to 4 x 4 = 16 patches
-        context_features = self.adap_max(context_features) # 200 x 2048 x 4 x 4
         target_features = self.adap_max(target_features) # 160 x 2048 x 4 x 4
-
-        # Reshape before averaging across all the patches
-        context_features = context_features.reshape(-1, self.args.trans_linear_in_dim, self.num_patches) # 200 x 2048 x 16
         target_features = target_features.reshape(-1, self.args.trans_linear_in_dim, self.num_patches) # 160 x 2048 x 16       
-
-        # Permute before passing to the self-attention layer
-        context_features = context_features.permute(0, 2, 1) # 200 x 16 x 2048
         target_features = target_features.permute(0, 2, 1) # 160 x 16 x 2048
-
-        # Performing self-attention across the 16 patches
-        context_features = self.attn_pat(context_features) # 200 x 16 x 2048 
         target_features = self.attn_pat(target_features) # 160 x 16 x 2048
-
-        # Average across the patches 
-        context_features = torch.mean(context_features, dim = 1) # 200 x 2048
         target_features = torch.mean(target_features, dim = 1) # 160 x 2048
-
-        # Reshaping before passing to the Cross-Transformer and computing the distance after patch-enrichment as well
-        context_features = context_features.reshape(-1, self.args.seq_len, self.args.trans_linear_in_dim) # 25 x 8 x 2048
         target_features = target_features.reshape(-1, self.args.seq_len, self.args.trans_linear_in_dim) # 20 x 8 x 2048
 
         # Compute logits using the new loss before applying frame-level attention
@@ -543,21 +536,21 @@ class CNN_STRM(nn.Module):
         sample_logits_fr = torch.mean(sample_logits_fr, dim=[-1]) # 20 x 5
 
         # OPEN SET PART
-        closest_classes = all_logits_fr.squeeze().argmax(dim=-1).to(differences[0].device)
+        closest_classes = all_logits_fr.squeeze(-1).argmax(dim=-1).to(differences[0].device)
         differences = torch.stack(differences)  # Shape: (1, 5, 40, 28, 1152)
         permuted_differences = differences.permute(0, 2, 1, 3, 4)  # Shape: (1, 40, 5, 28, 1152)
-        closest_classes = closest_classes.squeeze()  # Shape: (40)
-        permuted_differences = permuted_differences.squeeze() # Shape: (40, 28, 5, 1152)
+        # closest_classes = closest_classes.squeeze()  # Shape: (40)  # TODO CHECK THIS LINE ON SERVER
+        permuted_differences = permuted_differences.squeeze(0) # Shape: (40, 5, 28, 1152)
         expanded_closest_classes = closest_classes.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1) # Shape: (40, 1, 1, 1)
         indexed_differences = permuted_differences.gather(1, expanded_closest_classes.expand(-1, -1, differences.size(3), differences.size(4)))
-        indexed_differences = indexed_differences.squeeze()  # Shape: (40, 28, 1152)
+        indexed_differences = indexed_differences.squeeze(0)  # Shape: (40, 28, 1152)
         open_set_logits = self.open_set_model(indexed_differences)
 
         return_dict = {'logits': split_first_dim_linear(sample_logits_fr, [NUM_SAMPLES, target_features.shape[0]]), 
                     'logits_post_pat': split_first_dim_linear(sample_logits_post_pat, [NUM_SAMPLES, target_features.shape[0]]),
                     'open_set_logits': open_set_logits}
 
-        return return_dict
+        return return_dict, context_features  # Precomputed context features needed
 
     def forward_hook(self, module, input, output):
         self.activations.append(output)

@@ -202,7 +202,6 @@ class TemporalCrossTransformer(nn.Module):
             4-queries * 5 classes x 5(5 classes) and store this in a logit vector
         '''
         all_distances_tensor = torch.zeros(n_queries, self.args.way) # 20 x 5
-        differences = []
 
         for label_idx, c in enumerate(unique_labels):
         
@@ -229,7 +228,6 @@ class TemporalCrossTransformer(nn.Module):
             
             # calculate distances from queries to query-specific class prototypes
             diff = mh_queries_vs - query_prototype # 20 x 28 x 1152
-            differences.append(diff)
             norm_sq = torch.norm(diff, dim=[-2,-1])**2 # 20 
             distance = torch.div(norm_sq, self.tuples_len) # 20
             
@@ -238,9 +236,7 @@ class TemporalCrossTransformer(nn.Module):
             c_idx = c.long()
             all_distances_tensor[:,c_idx] = distance # 20
         
-        return_dict = {'logits': all_distances_tensor, "differences": torch.stack(differences)}
-        
-        return return_dict
+        return all_distances_tensor
 
     @staticmethod
     def _extract_class_indices(labels, which_class):
@@ -526,29 +522,14 @@ class CNN_STRM(nn.Module):
         '''
 
         # Frame-level logits
-        res = [t(context_features_fr, context_labels, target_features_fr) for t in self.transformers]
-        all_logits_fr = [r['logits'] for r in res]
-        differences = [r['differences'] for r in res]
-        # all_logits_fr, differences = [t(context_features_fr, context_labels, target_features_fr)['logits'] for t in self.transformers
+        all_logits_fr = [t(context_features_fr, context_labels, target_features_fr) for t in self.transformers]
         all_logits_fr = torch.stack(all_logits_fr, dim=-1) # 20 x 5 x 1[number of timesteps] 20 - 5 x 4[5-way x 4 queries/class]
 
         sample_logits_fr = all_logits_fr
         sample_logits_fr = torch.mean(sample_logits_fr, dim=[-1]) # 20 x 5
 
-        # OPEN SET PART
-        closest_classes = all_logits_fr.squeeze(-1).argmax(dim=-1).to(differences[0].device)
-        differences = torch.stack(differences)  # Shape: (1, 5, 40, 28, 1152)
-        permuted_differences = differences.permute(0, 2, 1, 3, 4)  # Shape: (1, 40, 5, 28, 1152)
-        # closest_classes = closest_classes.squeeze()  # Shape: (40)  # TODO CHECK THIS LINE ON SERVER
-        permuted_differences = permuted_differences.squeeze(0) # Shape: (40, 5, 28, 1152)
-        expanded_closest_classes = closest_classes.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1) # Shape: (40, 1, 1, 1)
-        indexed_differences = permuted_differences.gather(1, expanded_closest_classes.expand(-1, -1, differences.size(3), differences.size(4)))
-        indexed_differences = indexed_differences.squeeze(0)  # Shape: (40, 28, 1152)
-        open_set_logits = self.open_set_model(indexed_differences)
-
         return_dict = {'logits': split_first_dim_linear(sample_logits_fr, [NUM_SAMPLES, target_features.shape[0]]), 
-                    'logits_post_pat': split_first_dim_linear(sample_logits_post_pat, [NUM_SAMPLES, target_features.shape[0]]),
-                    'open_set_logits': open_set_logits}
+                    'logits_post_pat': split_first_dim_linear(sample_logits_post_pat, [NUM_SAMPLES, target_features.shape[0]])}
 
         return return_dict, context_features  # Precomputed context features needed
 

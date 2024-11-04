@@ -156,7 +156,14 @@ def aggregate_accuracy(test_logits_sample, test_labels):
     Compute classification accuracy.
     """
     averaged_predictions = torch.logsumexp(test_logits_sample, dim=0)
-    return torch.mean(torch.eq(test_labels, torch.argmax(averaged_predictions, dim=-1)).float())
+    highest_classes = torch.argmax(averaged_predictions, dim=-1)
+    no_predictions = torch.max(torch.softmax(averaged_predictions, dim=-1), dim=-1).values < 0.5
+    highest_classes[no_predictions] = -1
+    all_acc = torch.mean(torch.eq(test_labels, highest_classes).float()).item()
+    closed_acc = torch.mean(torch.eq(test_labels[test_labels != -1], highest_classes[test_labels != -1]).float()).item()
+    open_acc = torch.mean(torch.eq(test_labels == -1, highest_classes == -1).float()).item()
+    return {"all": all_acc, "closed": closed_acc, "open": open_acc}
+
 
 def task_confusion(test_logits, test_labels, real_test_labels, batch_class_list):
     preds = torch.argmax(torch.logsumexp(test_logits, dim=0), dim=-1)

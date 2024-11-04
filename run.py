@@ -51,6 +51,19 @@ def main():
     learner = Learner()
     learner.run()
 
+class VarianceLoss(torch.nn.Module):
+    def __init__(self):
+        super(VarianceLoss, self).__init__()
+
+    def forward(self, logits):
+        # Calcola la softmax delle distanze
+        softmax_logits = torch.softmax(logits, dim=-1)
+        
+        # Penalizza la varianza per spingere i logit verso lo stesso valore
+        variance_loss = torch.var(softmax_logits, dim=-1).mean()
+        
+        return variance_loss
+
 
 class Learner:
     def __init__(self):
@@ -91,7 +104,8 @@ class Learner:
             self.load_checkpoint()
         self.optimizer.zero_grad()
 
-        self.open_set_loss = torch.nn.BCELoss()
+        self.open_set_loss = VarianceLoss()
+
 
     def init_model(self):
         model = CNN_STRM(self.args)
@@ -197,8 +211,6 @@ class Learner:
         with tf.compat.v1.Session(config=config) as session:
                 train_accuracies = []
                 losses = []
-                open_set_accuracies = []
-                open_set_losses = []
                 total_iterations = self.args.training_iterations
 
                 iteration = self.start_iteration
@@ -217,11 +229,9 @@ class Learner:
                     iteration += 1
                     torch.set_grad_enabled(True)
 
-                    task_loss, task_accuracy, open_set_loss, open_set_accuracy = self.train_task(task_dict)
+                    task_loss, task_accuracy = self.train_task(task_dict)
                     train_accuracies.append(task_accuracy)
                     losses.append(task_loss)
-                    open_set_accuracies.append(open_set_accuracy)
-                    open_set_losses.append(open_set_loss)
 
                     # optimize
                     if ((iteration + 1) % self.args.tasks_per_batch == 0) or (iteration == (total_iterations - 1)):
@@ -230,22 +240,25 @@ class Learner:
                     self.scheduler.step()
                     if (iteration + 1) % self.args.print_freq == 0:
                         # print training stats
-                        print_and_log(self.logfile,'Task [{}/{}], Train Loss: {:.7f}, Train Accuracy: {:.7f}, Open Set Loss: {:.7f}, Open Set Accuracy: {:.7f}'.format(iteration + 1, total_iterations, torch.Tensor(losses).mean().item(),
-                                              torch.Tensor(train_accuracies).mean().item(), torch.Tensor(open_set_losses).mean().item(), torch.Tensor(open_set_accuracies).mean().item()))
-                        train_logger.info("For Task: {0}, the training loss is {1} and Training Accuracy is {2} and Open Set Loss is {3} and Open Set Accuracy is {4}".format(iteration + 1, torch.Tensor(losses).mean().item(),
-                            torch.Tensor(train_accuracies).mean().item(), torch.Tensor(open_set_losses).mean().item(), torch.Tensor(open_set_accuracies).mean().item()))
+                        all_acc = np.mean([x["all"] for x in train_accuracies])
+                        open_acc = np.mean([x["open"] for x in train_accuracies])
+                        closed_acc = np.mean([x["closed"] for x in train_accuracies])
+                        all_loss = np.mean([x["all"] for x in losses])
+                        open_loss = np.mean([x["open"] for x in losses])
+                        closed_loss = np.mean([x["closed"] for x in losses])
+                        print_and_log(self.logfile,"Task [{}/{}], Train All Loss: {:.7f}, Train Open Loss: {:.7f}, Train Closed Loss: {:.7f}, Train All Accuracy: {:.7f}, Train Open Accuracy: {:.7f}, Train Closed Accuracy: {:.7f}".format(iteration + 1, total_iterations, all_loss, open_loss, closed_loss, all_acc, open_acc, closed_acc))
+                        # train_logger.info("For Task: {0}, the training loss is {1} and Training Accuracy is {2} and Open Set Loss is {3} and Open Set Accuracy is {4}".format(iteration + 1, torch.Tensor(losses).mean().item(),
+                        #     torch.Tensor(train_accuracies).mean().item(), torch.Tensor(open_set_losses).mean().item(), torch.Tensor(open_set_accuracies).mean().item()))
 
-                        avg_train_acc = torch.Tensor(train_accuracies).mean().item()
-                        avg_train_loss = torch.Tensor(losses).mean().item()
-                        avg_open_set_acc = torch.Tensor(open_set_accuracies).mean().item()
-                        avg_open_set_loss = torch.Tensor(open_set_losses).mean().item()
-
-                        wandb.log({"Train Accuracy": avg_train_acc, "Train Loss": avg_train_loss, "Open Set Accuracy": avg_open_set_acc, "Open Set Loss": avg_open_set_loss})      
+                        wandb.log({"Train All Accuracy": all_acc,
+                                   "Train Open Accuracy": open_acc,
+                                   "Train Closed Accuracy": closed_acc,
+                                   "Train All Loss": all_loss,
+                                   "Train Open Loss": open_loss,
+                                   "Train Closed Loss": closed_loss})     
                         
                         train_accuracies = []
                         losses = []
-                        open_set_accuracies = []
-                        open_set_losses = []
 
                     if ((iteration + 1) % self.args.save_freq == 0) and (iteration + 1) != total_iterations:
                         self.save_checkpoint(iteration + 1)
@@ -271,36 +284,34 @@ class Learner:
         unknown_images = unknown_images.to(self.device)
 
         all_images = torch.cat((target_images, unknown_images), 0)
-        model_dict = self.model(context_images, context_labels, all_images)
+        model_dict, precomputed_context_features = self.model(context_images, context_labels, all_images)
         target_logits = model_dict['logits'].to(self.device)
 
         # Open set logits
-        open_set_logits = model_dict['open_set_logits'].to(self.device).squeeze()
-        open_set_target = torch.cat((torch.ones_like(target_labels), torch.zeros_like(unknown_labels))).float()
-        open_set_loss = self.open_set_loss(open_set_logits, open_set_target)
-        open_set_accuracy = self.open_set_accuracy_fn(open_set_logits, open_set_target)
-        # Fix for the rest
-        target_logits, unknown_target_logits = target_logits[:, :target_labels.size(0)], target_logits[:, target_labels.size(0):]
+        known_target_logits, unknown_target_logits = target_logits[:, :target_labels.size(0)], target_logits[:, target_labels.size(0):]
+        open_set_loss_value = self.open_set_loss(unknown_target_logits)
 
         # Target logits after applying query-distance-based similarity metric on patch-level enriched features
         target_logits_post_pat = model_dict['logits_post_pat'].to(self.device)
-        target_logits_post_pat = target_logits_post_pat[:, :target_labels.size(0)]  # TODO ADDED TO REMOVE USELESS LOGITS
+        known_target_logits_post_pat, unknown_target_logits_post_pat = target_logits_post_pat[:, :target_labels.size(0)], target_logits_post_pat[:, target_labels.size(0):]
         target_labels = target_labels.to(self.device)
 
-        task_loss = self.loss(target_logits, target_labels, self.device) / self.args.tasks_per_batch
-        task_loss_post_pat = self.loss(target_logits_post_pat, target_labels, self.device) / self.args.tasks_per_batch
+        task_loss = self.loss(known_target_logits, target_labels, self.device) / self.args.tasks_per_batch
+        task_loss_post_pat = self.loss(known_target_logits_post_pat, target_labels, self.device) / self.args.tasks_per_batch
 
         # Joint loss
-        task_loss = task_loss + 0.1*task_loss_post_pat + open_set_loss  # added open_set_loss
+        all_task_loss = task_loss + 0.1*task_loss_post_pat + open_set_loss_value  # added open_set_loss
 
         # Add the logits before computing the accuracy
         target_logits = target_logits + 0.1*target_logits_post_pat
-
+        # Open set accuracy (FSOS acc) (50% closed set known, 50% open set unknown)
+        target_labels = torch.cat([target_labels, torch.full_like(target_labels.to(self.device), fill_value=-1)])
         task_accuracy = self.accuracy_fn(target_logits, target_labels)
 
-        task_loss.backward(retain_graph=False)
+        all_task_loss.backward(retain_graph=False)
 
-        return task_loss, task_accuracy, open_set_loss, open_set_accuracy
+        losses = {"all": all_task_loss.item(), "open": open_set_loss_value.item(), "closed": (task_loss + 0.1*task_loss_post_pat).item()}
+        return losses, task_accuracy
 
     def test(self, session, num_episode):
         self.model.eval()

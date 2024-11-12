@@ -107,7 +107,13 @@ class DistanceLoss(nn.Module):
             support_embed = self.relu(support_embed) # 140 x 1024
 
             # Calculate p-norm distance between the query embedding and the support set embedding
-            distmat = torch.cdist(query_embed, support_embed) # 560[20 x 28] x 140[28 x 5]
+            # distmat = torch.cdist(query_embed, support_embed) # 560[20 x 28] x 140[28 x 5]  # Closed set
+            # Normalize features before cosine similarity
+            query_embed = query_embed / torch.norm(query_embed, dim=-1).unsqueeze(-1)
+            support_embed = support_embed / torch.norm(support_embed, dim=-1).unsqueeze(-1)
+            distmat = torch.nn.functional.cosine_similarity(query_embed.unsqueeze(1), 
+                                                            support_embed.unsqueeze(0), dim=-1)  # Shape: (1120, 140)
+            distmat = -distmat  # Since they use a distance and we use a similarity, we need to do this
 
             # Across the 140 tuples compared against, get the minimum distance for each of the 560 queries
             min_dist = distmat.min(dim=1)[0].reshape(n_queries, self.tuples_len) # 20[5-way x 4-queries] x 28
@@ -160,6 +166,9 @@ class TemporalCrossTransformer(nn.Module):
         frame_combinations = combinations(frame_idxs, temporal_set_size)
         self.tuples = [torch.tensor(comb).cuda() for comb in frame_combinations]
         self.tuples_len = len(self.tuples) #28
+
+        # Open set part
+        self.similarity_function = nn.CosineSimilarity()
     
     def forward(self, support_set, support_labels, queries):
         # support_set : 25 x 8 x 2048, support_labels: 25, queries: 20 x 8 x 2048
@@ -227,12 +236,19 @@ class TemporalCrossTransformer(nn.Module):
             query_prototype = torch.sum(query_prototype, dim=1).to(device) # 20 x 28 x 1152 -> Sum across all the support set values of the corres. class
             
             # calculate distances from queries to query-specific class prototypes
-            diff = mh_queries_vs - query_prototype # 20 x 28 x 1152
-            norm_sq = torch.norm(diff, dim=[-2,-1])**2 # 20 
-            distance = torch.div(norm_sq, self.tuples_len) # 20
+            # diff = mh_queries_vs - query_prototype # 20 x 28 x 1152
+            # norm_sq = torch.norm(diff, dim=[-2,-1])**2 # 20 
+            # distance = torch.div(norm_sq, self.tuples_len) # 20
             
-            # multiply by -1 to get logits
-            distance = distance * -1
+            # # multiply by -1 to get logits
+            # distance = distance * -1
+
+            # Normalize features before cosine similarity
+            mh_queries_vs = mh_queries_vs / torch.norm(mh_queries_vs, dim=-1).unsqueeze(-1)
+            query_prototype = query_prototype / torch.norm(query_prototype, dim=-1).unsqueeze(-1)
+            distance = self.similarity_function(mh_queries_vs.permute(0, 2, 1), query_prototype.permute(0, 2, 1)) # 20 x 28
+            distance = distance.mean(dim=1)
+
             c_idx = c.long()
             all_distances_tensor[:,c_idx] = distance # 20
         

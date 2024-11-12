@@ -7,7 +7,6 @@
 
 NEW_HOME="."
 COMMAND_TO_RUN="python3 run.py 
-                -r
                 -c runs_strm/checkpoint_dir_nturgbd_OS/
                 --query_per_class 4
                 --shot 5 

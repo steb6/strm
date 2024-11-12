@@ -51,19 +51,27 @@ def main():
     learner = Learner()
     learner.run()
 
-class VarianceLoss(torch.nn.Module):
+class OpenSetLoss(torch.nn.Module):
     def __init__(self):
-        super(VarianceLoss, self).__init__()
+        super(OpenSetLoss, self).__init__()
 
-    def forward(self, logits):
-        # Calcola la softmax delle distanze
-        softmax_logits = torch.softmax(logits, dim=-1)
-        
-        # Penalizza la varianza per spingere i logit verso lo stesso valore
-        variance_loss = torch.var(softmax_logits, dim=-1).mean()
-        
-        return variance_loss
+    def forward(self, logits, targets):
+        if len(logits.shape) > 2:
+            logits = logits.squeeze(0)
 
+        known_indices = targets != -1
+        known_logits = torch.gather(logits[known_indices], 1, targets[known_indices].unsqueeze(1)).squeeze(1)  # 20
+        known_loss = torch.exp(torch.tensor(1)) - torch.exp(known_logits)
+        known_loss = known_loss.mean()  # TODO mean or sum?
+
+        unknown_indices = targets == -1
+        unknown_logits = logits[unknown_indices].reshape(-1)
+        pos_unknown_logits = unknown_logits[unknown_logits > 0]
+        pos_unknown_logits = pos_unknown_logits.mean()
+        unknown_loss = -1 + torch.exp(pos_unknown_logits)
+        
+        open_set_loss = known_loss + unknown_loss
+        return open_set_loss
 
 class Learner:
     def __init__(self):
@@ -104,7 +112,7 @@ class Learner:
             self.load_checkpoint()
         self.optimizer.zero_grad()
 
-        self.open_set_loss = VarianceLoss()
+        self.open_set_loss = OpenSetLoss()
 
 
     def init_model(self):
@@ -288,19 +296,22 @@ class Learner:
         target_logits = model_dict['logits'].to(self.device)
 
         # Open set logits
+        open_set_targets = torch.cat([target_labels, torch.full_like(unknown_labels, fill_value=-1)])
+        open_set_loss_value = self.open_set_loss(target_logits, open_set_targets)
+        target_logits_post_pat = model_dict['logits_post_pat'].to(self.device)
+        open_set_loss_value_post_pat = self.open_set_loss(target_logits_post_pat, open_set_targets)
+
+        # Get known and unknown logits
         known_target_logits, unknown_target_logits = target_logits[:, :target_labels.size(0)], target_logits[:, target_labels.size(0):]
-        open_set_loss_value = self.open_set_loss(unknown_target_logits)
+        known_target_logits_post_pat, unknown_target_logits_post_pat = target_logits_post_pat[:, :target_labels.size(0)], target_logits_post_pat[:, target_labels.size(0):]
 
         # Target logits after applying query-distance-based similarity metric on patch-level enriched features
-        target_logits_post_pat = model_dict['logits_post_pat'].to(self.device)
-        known_target_logits_post_pat, unknown_target_logits_post_pat = target_logits_post_pat[:, :target_labels.size(0)], target_logits_post_pat[:, target_labels.size(0):]
         target_labels = target_labels.to(self.device)
-
         task_loss = self.loss(known_target_logits, target_labels, self.device) / self.args.tasks_per_batch
         task_loss_post_pat = self.loss(known_target_logits_post_pat, target_labels, self.device) / self.args.tasks_per_batch
 
         # Joint loss
-        all_task_loss = task_loss + 0.1*task_loss_post_pat + open_set_loss_value  # added open_set_loss
+        all_task_loss = task_loss + 0.1*task_loss_post_pat + open_set_loss_value + 0.1*open_set_loss_value_post_pat  # added open_set_loss
 
         # Add the logits before computing the accuracy
         target_logits = target_logits + 0.1*target_logits_post_pat
@@ -310,64 +321,79 @@ class Learner:
 
         all_task_loss.backward(retain_graph=False)
 
-        losses = {"all": all_task_loss.item(), "open": open_set_loss_value.item(), "closed": (task_loss + 0.1*task_loss_post_pat).item()}
+        losses = {"all": all_task_loss.item(),
+                  "open": (open_set_loss_value+0.1*open_set_loss_value_post_pat).item(), 
+                  "closed": (task_loss + 0.1*task_loss_post_pat).item()}
         return losses, task_accuracy
 
     def test(self, session, num_episode):
         self.model.eval()
         with torch.no_grad():
+            self.video_loader.dataset.train = False
+            accuracy_dict = {}
+            accuracies = []
+            losses = []
+            iteration = 0
+            item = self.args.dataset
+            progress_bar = tqdm(total=self.args.num_test_tasks, desc='Processing')
+            
+            for task_dict in self.video_loader:
+                if iteration >= self.args.num_test_tasks:
+                    break
+                iteration += 1
+                progress_bar.update()
 
-                self.video_loader.dataset.train = False
-                accuracy_dict ={}
-                accuracies = []
-                losses = []
-                iteration = 0
-                item = self.args.dataset
-                progress_bar = tqdm(total=self.args.num_test_tasks, desc='Processing')
-                for task_dict in self.video_loader:
-                    if iteration >= self.args.num_test_tasks:
-                        break
-                    iteration += 1
-                    progress_bar.update()
+                context_images, target_images, context_labels, target_labels, real_target_labels, batch_class_list, unknown_images, unknown_labels = self.prepare_task(task_dict)
+                context_images = context_images.to(self.device)
+                context_labels = context_labels.to(self.device)
+                target_images = target_images.to(self.device)
+                unknown_images = unknown_images.to(self.device)
 
-                    context_images, target_images, context_labels, target_labels, real_target_labels, batch_class_list, unknown_images, unknown_labels = self.prepare_task(task_dict)
-                    model_dict = self.model(context_images, context_labels, target_images)
-                    target_logits = model_dict['logits'].to(self.device)
+                all_images = torch.cat((target_images, unknown_images), 0)
+                model_dict, precomputed_context_features = self.model(context_images, context_labels, all_images)
+                target_logits = model_dict['logits'].to(self.device)
 
-                    # Target logits after applying query-distance-based similarity metric on patch-level enriched features   
-                    target_logits_post_pat = model_dict['logits_post_pat'].to(self.device)
+                # Open set logits
+                open_set_targets = torch.cat([target_labels, torch.full_like(unknown_labels, fill_value=-1)])
+                open_set_loss_value = self.open_set_loss(target_logits, open_set_targets)
+                target_logits_post_pat = model_dict['logits_post_pat'].to(self.device)
+                open_set_loss_value_post_pat = self.open_set_loss(target_logits_post_pat, open_set_targets)
 
-                    target_labels = target_labels.to(self.device)
+                # Get known and unknown logits
+                known_target_logits, unknown_target_logits = target_logits[:, :target_labels.size(0)], target_logits[:, target_labels.size(0):]
+                known_target_logits_post_pat, unknown_target_logits_post_pat = target_logits_post_pat[:, :target_labels.size(0)], target_logits_post_pat[:, target_labels.size(0):]
 
-                    # Add the logits before computing the accuracy
-                    target_logits = target_logits + 0.1*target_logits_post_pat
+                # Target logits after applying query-distance-based similarity metric on patch-level enriched features
+                target_labels = target_labels.to(self.device)
+                task_loss = self.loss(known_target_logits, target_labels, self.device) / self.args.num_test_tasks
+                task_loss_post_pat = self.loss(known_target_logits_post_pat, target_labels, self.device) / self.args.num_test_tasks
 
-                    accuracy = self.accuracy_fn(target_logits, target_labels)
-                    
-                    loss = self.loss(target_logits, target_labels, self.device)/self.args.num_test_tasks
-                   
-                    # Loss using the new distance metric after  patch-level enrichment
-                    loss_post_pat = self.loss(target_logits_post_pat, target_labels, self.device)/self.args.num_test_tasks
+                # Joint loss
+                all_task_loss = task_loss + 0.1 * task_loss_post_pat + open_set_loss_value + 0.1 * open_set_loss_value_post_pat
 
-                    # Joint loss
-                    loss = loss + 0.1*loss_post_pat
+                # Add the logits before computing the accuracy
+                target_logits = target_logits + 0.1 * target_logits_post_pat
+                # Open set accuracy (FSOS acc) (50% closed set known, 50% open set unknown)
+                target_labels = torch.cat([target_labels, torch.full_like(target_labels.to(self.device), fill_value=-1)])
+                task_accuracy = self.accuracy_fn(target_logits, target_labels)
 
-                    eval_logger.info("For Task: {0}, the testing loss is {1} and Testing Accuracy is {2}".format(iteration + 1, loss.item(),
-                            accuracy.item()))
-                    losses.append(loss.item())    
-                    accuracies.append(accuracy.item())
-                    del target_logits
-                    del target_logits_post_pat
+                losses.append(all_task_loss.item())
+                accuracies.append(task_accuracy["all"])
 
-                accuracy = np.array(accuracies).mean() * 100.0
-                confidence = (196.0 * np.array(accuracies).std()) / np.sqrt(len(accuracies))
-                loss = np.array(losses).mean()
-                accuracy_dict[item] = {"accuracy": accuracy, "confidence": confidence, "loss": loss}
-                eval_logger.info("For Task: {0}, the testing loss is {1} and Testing Accuracy is {2}".format(num_episode, loss, accuracy))
+                eval_logger.info("For Task: {0}, the testing loss is {1} and Testing Accuracy is {2}".format(iteration, all_task_loss.item(), task_accuracy["all"]))
 
-                self.video_loader.dataset.train = True
+                del target_logits
+                del target_logits_post_pat
+
+            accuracy = np.array(accuracies).mean() * 100.0
+            confidence = (196.0 * np.array(accuracies).std()) / np.sqrt(len(accuracies))
+            loss = np.array(losses).mean()
+            accuracy_dict[item] = {"accuracy": accuracy, "confidence": confidence, "loss": loss}
+            eval_logger.info("For Task: {0}, the testing loss is {1} and Testing Accuracy is {2}".format(num_episode, loss, accuracy))
+
+            self.video_loader.dataset.train = True
         self.model.train()
-        
+
         return accuracy_dict
 
 

@@ -4,6 +4,7 @@ import os
 import math
 from enum import Enum
 import sys
+from sklearn.metrics import roc_auc_score
 
 
 class TestAccuracies:
@@ -152,17 +153,28 @@ def loss(test_logits_sample, test_labels, device):
 
 
 def aggregate_accuracy(test_logits_sample, test_labels):
-    """
-    Compute classification accuracy.
-    """
-    averaged_predictions = torch.logsumexp(test_logits_sample, dim=0)
-    highest_classes = torch.argmax(averaged_predictions, dim=-1)
-    no_predictions = torch.max(torch.softmax(averaged_predictions, dim=-1), dim=-1).values < 0.5
-    highest_classes[no_predictions] = -1
-    all_acc = torch.mean(torch.eq(test_labels, highest_classes).float()).item()
-    closed_acc = torch.mean(torch.eq(test_labels[test_labels != -1], highest_classes[test_labels != -1]).float()).item()
-    open_acc = torch.mean(torch.eq(test_labels == -1, highest_classes == -1).float()).item()
-    return {"all": all_acc, "closed": closed_acc, "open": open_acc}
+    if len(test_logits_sample.shape) > 2:
+        test_logits_sample = test_logits_sample.squeeze(0)
+
+    # Closed set accuracy
+    known_indices = test_labels != -1
+    known_test_logits_sample, known_test_labels = test_logits_sample[known_indices], test_labels[known_indices]
+    known_predictions = torch.argmax(known_test_logits_sample, dim=-1)
+    closed_set_acc = torch.mean(torch.eq(known_test_labels, known_predictions).float()).item()
+
+    # AUROC for open set
+    should_be_one_indices = test_labels[known_indices] + (torch.arange(0, len(test_labels[known_indices])).to(known_indices.device) * test_logits_sample.shape[1])
+    should_be_one = test_logits_sample[known_indices].reshape(-1)[should_be_one_indices]
+
+    flat_logits = test_logits_sample.reshape(-1)
+    indices = torch.ones_like(flat_logits, dtype=bool)
+    indices[should_be_one_indices] = False
+    should_be_zero = flat_logits[indices]
+    aurroc = roc_auc_score(torch.cat([torch.ones_like(should_be_one), torch.zeros_like(should_be_zero)]).detach().cpu().numpy(),
+                           torch.cat([should_be_one, should_be_zero]).detach().cpu().numpy())
+
+    return {"all": 0, "closed": closed_set_acc, "open": aurroc}
+    
 
 
 def task_confusion(test_logits, test_labels, real_test_labels, batch_class_list):
